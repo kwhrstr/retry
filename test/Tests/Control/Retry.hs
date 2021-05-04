@@ -75,7 +75,7 @@ recoveringTests = testGroup "recovering"
 
           takeMVar done
 
-          count <- atomically (readTVar counter)
+          count <- readTVarIO counter
           count @?= 1
 
       , testCase "recovers from custom exceptions" $ do
@@ -155,9 +155,9 @@ recoveringTests = testGroup "recovering"
 monoidTests :: TestTree
 monoidTests = testGroup "Policy is a monoid"
   [ testProperty "left identity" $ property $
-      propIdentity (\p -> mempty <> p) id
+      propIdentity (mempty <>) id
   , testProperty "right identity" $ property $
-      propIdentity (\p -> p <> mempty) id
+      propIdentity (<> mempty) id
   , testProperty "associativity" $ property $
       propAssociativity (\x y z -> x <> (y <> z)) (\x y z -> (x <> y) <> z)
   ]
@@ -170,9 +170,7 @@ monoidTests = testGroup "Policy is a monoid"
           validRes = maybe True (>= 0)
       l <- liftIO $ applyPolicy' left
       r <- liftIO $ applyPolicy' right
-      if validRes r && validRes l
-        then l === r
-        else return ()
+      when (validRes r && validRes l) $ l === r
     propAssociativity left right  = do
       retryStatus <- forAll genRetryStatus
       let genDelay = Gen.maybe (Gen.int (Range.linear 0 maxBound))
@@ -230,7 +228,7 @@ maskingStateTests = testGroup "masking state"
         maskingState' @?= maskingState
         fail "Retrying..."
       assertBool
-        ("Expected EX.IOException but didn't get one")
+        "Expected EX.IOException but didn't get one"
         (isLeft (final :: Either EX.IOException ()))
 
   , testCase "should mask asynchronous exceptions in exception handlers" $ do
@@ -242,7 +240,7 @@ maskingStateTests = testGroup "masking state"
             ]
       final <- try $ recovering retryPolicyDefault checkMaskingStateHandlers $ const $ fail "Retrying..."
       assertBool
-        ("Expected EX.IOException but didn't get one")
+        "Expected EX.IOException but didn't get one"
         (isLeft (final :: Either EX.IOException ()))
   ]
 
@@ -275,7 +273,7 @@ capDelayTests = testGroup "capDelay"
 -- | Generates policies that increase on each iteration
 genScalingPolicy :: (Alternative m) => Int -> m (RetryPolicyM Identity)
 genScalingPolicy baseDelay =
-  (pure (exponentialBackoff baseDelay) <|> pure (fibonacciBackoff baseDelay))
+  pure (exponentialBackoff baseDelay) <|> pure (fibonacciBackoff baseDelay)
 
 
 -------------------------------------------------------------------------------
@@ -308,7 +306,7 @@ quadraticDelayTests = testGroup "quadratic delay"
       endTime <- liftIO getCurrentTime
       HH.assert (isLeftAnd isUserError res)
       let tmo = if retries > 0 then timeout * 2 ^ (retries - 1) else 0
-      let ms' = ((fromInteger . toInteger $ tmo) / 1000000.0)
+      let ms' = (fromInteger . toInteger $ tmo) / 1000000.0
       HH.assert (diffUTCTime endTime startTime >= ms')
   ]
 
@@ -430,9 +428,7 @@ mkFailN e n = do
     r <- newIORef 0
     return $ const $ do
       old <- atomicModifyIORef' r $ \ old -> (old+1, old)
-      case old >= n of
-        True  -> return ()
-        False -> throwM e
+      unless (old >= n) $ throwM e
 
 
 -------------------------------------------------------------------------------

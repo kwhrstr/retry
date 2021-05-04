@@ -184,7 +184,7 @@ natTransformRetryPolicy f (RetryPolicyM p) = RetryPolicyM $ \stat -> f (p stat)
 -- | Modify the delay of a RetryPolicy.
 -- Does not change whether or not a retry is performed.
 modifyRetryPolicyDelay :: Functor m => (Int -> Int) -> RetryPolicyM m -> RetryPolicyM m
-modifyRetryPolicyDelay f (RetryPolicyM p) = RetryPolicyM $ \stat -> fmap f <$> p stat
+modifyRetryPolicyDelay f (RetryPolicyM p) = RetryPolicyM (fmap (fmap f) . p)
 
 
 -------------------------------------------------------------------------------
@@ -277,7 +277,7 @@ applyAndDelay policy s = do
     chk <- applyPolicy policy s
     case chk of
       Just rs -> do
-        case (rsPreviousDelay rs) of
+        case rsPreviousDelay rs of
           Nothing -> return ()
           Just delay -> liftIO $ threadDelay delay
         return (Just rs)
@@ -298,7 +298,7 @@ limitRetries
     :: Int
     -- ^ Maximum number of retries.
     -> RetryPolicy
-limitRetries i = retryPolicy $ \ RetryStatus { rsIterNumber = n} -> if n >= i then Nothing else (Just 0)
+limitRetries i = retryPolicy $ \ RetryStatus { rsIterNumber = n} -> if n >= i then Nothing else Just 0
 
 
 -------------------------------------------------------------------------------
@@ -313,8 +313,7 @@ limitRetriesByDelay
     -- ^ Time-delay limit in microseconds.
     -> RetryPolicyM m
     -> RetryPolicyM m
-limitRetriesByDelay i p = RetryPolicyM $ \ n ->
-    (>>= limit) `liftM` getRetryPolicyM p n
+limitRetriesByDelay i p = RetryPolicyM (fmap (>>= limit) . getRetryPolicyM p)
   where
     limit delay = if delay >= i then Nothing else Just delay
 
@@ -330,7 +329,7 @@ limitRetriesByCumulativeDelay
     -> RetryPolicyM m
     -> RetryPolicyM m
 limitRetriesByCumulativeDelay cumulativeLimit p = RetryPolicyM $ \ stat ->
-  (>>= limit stat) `liftM` getRetryPolicyM p stat
+  (>>= limit stat) <$> getRetryPolicyM p stat
   where
     limit status curDelay
       | rsCumulativeDelay status `boundedPlus` curDelay > cumulativeLimit = Nothing
@@ -402,8 +401,7 @@ capDelay
     -- ^ A maximum delay in microseconds
     -> RetryPolicyM m
     -> RetryPolicyM m
-capDelay limit p = RetryPolicyM $ \ n ->
-  (fmap (min limit)) `liftM` (getRetryPolicyM p) n
+capDelay limit p = RetryPolicyM (fmap (fmap (min limit)) . getRetryPolicyM p)
 
 
 -------------------------------------------------------------------------------
@@ -435,8 +433,7 @@ retrying  :: MonadIO m
           -> (RetryStatus -> m b)
           -- ^ Action to run
           -> m b
-retrying policy chk f =
-    retryingDynamic policy (\rs -> fmap toRetryAction . chk rs) f
+retrying policy chk = retryingDynamic policy (\rs -> fmap toRetryAction . chk rs)
 
 
 -------------------------------------------------------------------------------
@@ -514,7 +511,7 @@ recoverAll
          => RetryPolicyM m
          -> (RetryStatus -> m a)
          -> m a
-recoverAll set f = recovering set handlers f
+recoverAll set = recovering set handlers
     where
       handlers = skipAsyncExceptions ++ [h]
       h _ = Handler $ \ (_ :: SomeException) -> return True
@@ -564,7 +561,7 @@ recovering
 recovering policy hs = recoveringDynamic policy hs'
   where
     hs' = map (fmap' toRetryAction .) hs
-    fmap' f (Handler h) = Handler (liftM f . h)
+    fmap' f (Handler h) = Handler (fmap f . h)
 
 -- | The difference between this and 'recovering' is the same as
 --  the difference between 'retryingDynamic' and 'retrying'.
@@ -618,7 +615,7 @@ stepping
     :: (MonadUnliftIO m, MonadThrow m)
     => RetryPolicyM m
     -- ^ Just use 'retryPolicyDefault' for default settings
-    -> [(RetryStatus -> Handler m Bool)]
+    -> [RetryStatus -> Handler m Bool]
     -- ^ Should a given exception be retried? Action will be
     -- retried if this returns True *and* the policy allows it.
     -- This action will be consulted first even if the policy
@@ -703,7 +700,7 @@ simulatePolicyPP n p = do
     forM_ ps $ \ (iterNo, res) -> putStrLn $
       show iterNo <> ": " <> maybe "Inhibit" ppTime res
     putStrLn $ "Total cumulative delay would be: " <>
-      (ppTime $ boundedSum $ (mapMaybe snd) ps)
+      ppTime (boundedSum $ mapMaybe snd ps)
 
 
 -------------------------------------------------------------------------------

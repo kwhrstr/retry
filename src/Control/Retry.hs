@@ -81,14 +81,11 @@ module Control.Retry
 -------------------------------------------------------------------------------
 import           Control.Applicative
 import           Control.Concurrent
-#if MIN_VERSION_base(4, 7, 0)
-import           Control.Exception (AsyncException, SomeAsyncException)
-#else
+
 import           Control.Exception (AsyncException)
-#endif
 import           Control.Monad
-import           Control.Monad.Catch
-import           Control.Monad.IO.Class
+import           Control.Monad.Catch (throwM, MonadThrow)
+import           UnliftIO (MonadUnliftIO, MonadIO, SomeException, SomeAsyncException, Handler(..), Exception, liftIO, mask, try, fromException)
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.State
@@ -98,11 +95,7 @@ import           GHC.Generics
 import           GHC.Prim
 import           GHC.Types (Int(I#))
 import           System.Random
-# if MIN_VERSION_base(4, 9, 0)
 import           Data.Semigroup
-# else
-import           Data.Monoid
-# endif
 import           Prelude
 -------------------------------------------------------------------------------
 
@@ -160,7 +153,7 @@ retryPolicyDefault = constantDelay 50000 <> limitRetries 5
 -- Base 4.9.0 adds a Data.Semigroup module. This has fewer
 -- dependencies than the semigroups package, so we're using base's
 -- only if its available.
-# if MIN_VERSION_base(4, 9, 0)
+
 instance Monad m => Semigroup (RetryPolicyM m) where
   (RetryPolicyM a) <> (RetryPolicyM b) = RetryPolicyM $ \ n -> runMaybeT $ do
     a' <- MaybeT $ a n
@@ -171,14 +164,6 @@ instance Monad m => Semigroup (RetryPolicyM m) where
 instance Monad m => Monoid (RetryPolicyM m) where
     mempty = retryPolicy $ const (Just 0)
     mappend = (<>)
-# else
-instance Monad m => Monoid (RetryPolicyM m) where
-    mempty = retryPolicy $ const (Just 0)
-    (RetryPolicyM a) `mappend` (RetryPolicyM b) = RetryPolicyM $ \ n -> runMaybeT $ do
-      a' <- MaybeT $ a n
-      b' <- MaybeT $ b n
-      return $! max a' b'
-#endif
 
 
 -------------------------------------------------------------------------------
@@ -525,11 +510,7 @@ retryingDynamic policy chk f = go defaultRetryStatus
 -- Running action
 -- *** Exception: this is an error
 recoverAll
-#if MIN_VERSION_exceptions(0, 6, 0)
-         :: (MonadIO m, MonadMask m)
-#else
-         :: (MonadIO m, MonadCatch m)
-#endif
+         :: (MonadUnliftIO m, MonadThrow m)
          => RetryPolicyM m
          -> (RetryStatus -> m a)
          -> m a
@@ -551,12 +532,12 @@ skipAsyncExceptions
 skipAsyncExceptions = handlers
   where
     asyncH _ = Handler $ \ (_ :: AsyncException) -> return False
-#if MIN_VERSION_base(4, 7, 0)
+
     someAsyncH _ = Handler $ \(_ :: SomeAsyncException) -> return False
     handlers = [asyncH, someAsyncH]
-#else
-    handlers = [asyncH]
-#endif
+
+
+
 
 
 -------------------------------------------------------------------------------
@@ -569,14 +550,10 @@ skipAsyncExceptions = handlers
 -- just plan on catching 'SomeException', you may as well ues
 -- 'recoverAll'
 recovering
-#if MIN_VERSION_exceptions(0, 6, 0)
-    :: (MonadIO m, MonadMask m)
-#else
-    :: (MonadIO m, MonadCatch m)
-#endif
+    :: (MonadUnliftIO m, MonadThrow m)
     => RetryPolicyM m
     -- ^ Just use 'retryPolicyDefault' for default settings
-    -> [(RetryStatus -> Handler m Bool)]
+    -> [RetryStatus -> Handler m Bool]
     -- ^ Should a given exception be retried? Action will be
     -- retried if this returns True *and* the policy allows it.
     -- This action will be consulted first even if the policy
@@ -584,22 +561,18 @@ recovering
     -> (RetryStatus -> m a)
     -- ^ Action to perform
     -> m a
-recovering policy hs f =
-    recoveringDynamic policy hs' f
+recovering policy hs = recoveringDynamic policy hs'
   where
-    hs' = map (fmap toRetryAction .) hs
+    hs' = map (fmap' toRetryAction .) hs
+    fmap' f (Handler h) = Handler (liftM f . h)
 
 -- | The difference between this and 'recovering' is the same as
 --  the difference between 'retryingDynamic' and 'retrying'.
 recoveringDynamic
-#if MIN_VERSION_exceptions(0, 6, 0)
-    :: (MonadIO m, MonadMask m)
-#else
-    :: (MonadIO m, MonadCatch m)
-#endif
+    :: (MonadUnliftIO m, MonadThrow m)
     => RetryPolicyM m
     -- ^ Just use 'retryPolicyDefault' for default settings
-    -> [(RetryStatus -> Handler m RetryAction)]
+    -> [RetryStatus -> Handler m RetryAction]
     -- ^ Should a given exception be retried? Action will be
     -- retried if this returns either 'ConsultPolicy' or
     -- 'ConsultPolicyOverrideDelay' *and* the policy allows it.
@@ -642,11 +615,7 @@ recoveringDynamic policy hs f = mask $ \restore -> go restore defaultRetryStatus
 -- and failure. Useful for implementing retry logic in distributed
 -- queues and similar external-interfacing systems.
 stepping
-#if MIN_VERSION_exceptions(0, 6, 0)
-    :: (MonadIO m, MonadMask m)
-#else
-    :: (MonadIO m, MonadCatch m)
-#endif
+    :: (MonadUnliftIO m, MonadThrow m)
     => RetryPolicyM m
     -- ^ Just use 'retryPolicyDefault' for default settings
     -> [(RetryStatus -> Handler m Bool)]
@@ -671,15 +640,13 @@ stepping policy hs schedule f s = do
       recover e ((($ s) -> Handler h) : hs')
         | Just e' <- fromException e = do
             chk <- h e'
-            case chk of
-              True -> do
-                res <- applyPolicy policy s
-                case res of
-                  Just rs -> do
-                    schedule $! rs
-                    return Nothing
-                  Nothing -> throwM e'
-              False -> throwM e'
+            if chk then (do
+              res <- applyPolicy policy s
+              case res of
+                Just rs -> do
+                  schedule $! rs
+                  return Nothing
+                Nothing -> throwM e') else throwM e'
         | otherwise = recover e hs'
 
 

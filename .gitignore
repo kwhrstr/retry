@@ -8,3 +8,5 @@ cabal-dev
 TAGS
 .stack-work
 stack.yaml.lock
+*.idea
+*.iml

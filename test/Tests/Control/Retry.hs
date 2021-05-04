@@ -7,16 +7,13 @@ module Tests.Control.Retry
 
 -------------------------------------------------------------------------------
 import           Control.Applicative
-import           Control.Concurrent
-import           Control.Concurrent.STM      as STM
 import qualified Control.Exception           as EX
-import           Control.Monad.Catch
+import           Control.Monad.Catch         (throwM)
 import           Control.Monad.Identity
 import           Control.Monad.IO.Class
 import           Control.Monad.Writer.Strict
 import           Data.Either
-import           Data.IORef
-import           Data.List
+import           Data.List                  (sort, group)
 import           Data.Maybe
 import           Data.Time.Clock
 import           Data.Time.LocalTime         ()
@@ -25,6 +22,8 @@ import           Hedgehog                    as HH
 import qualified Hedgehog.Gen                as Gen
 import qualified Hedgehog.Range              as Range
 import           System.IO.Error
+import           UnliftIO                    hiding (timeout)
+import           UnliftIO.Concurrent
 import           Test.Tasty
 import           Test.Tasty.Hedgehog
 import           Test.Tasty.HUnit            (assertBool, testCase, (@?=))
@@ -52,15 +51,15 @@ recoveringTests :: TestTree
 recoveringTests = testGroup "recovering"
   [ testProperty "recovering test without quadratic retry delay" $ property $ do
       startTime <- liftIO getCurrentTime
-      timeout <- forAll (Gen.int (Range.linear 0 15))
+      timeout' <- forAll (Gen.int (Range.linear 0 15))
       retries <- forAll (Gen.int (Range.linear 0 50))
       res <- liftIO $ try $ recovering
-        (constantDelay timeout <> limitRetries retries)
+        (constantDelay timeout' <> limitRetries retries)
         testHandlers
         (const $ throwM (userError "booo"))
       endTime <- liftIO getCurrentTime
       HH.assert (isLeftAnd isUserError res)
-      let ms' = (fromInteger . toInteger $ (timeout * retries)) / 1000000.0
+      let ms' = (fromInteger . toInteger $ (timeout' * retries)) / 1000000.0
       HH.assert (diffUTCTime endTime startTime >= ms')
   , testGroup "exception hierarchy semantics"
       [ testCase "does not catch async exceptions" $ do
@@ -71,12 +70,12 @@ recoveringTests = testGroup "recovering"
           tid <- forkIO $
             recoverAll (limitRetries 2) (const work) `finally` putMVar done ()
 
-          atomically (STM.check . (== 1) =<< readTVar counter)
+          atomically (checkSTM . (== 1) =<< readTVar counter)
           EX.throwTo tid EX.UserInterrupt
 
           takeMVar done
 
-          count <- atomically (readTVar counter)
+          count <- readTVarIO counter
           count @?= 1
 
       , testCase "recovers from custom exceptions" $ do
@@ -156,9 +155,9 @@ recoveringTests = testGroup "recovering"
 monoidTests :: TestTree
 monoidTests = testGroup "Policy is a monoid"
   [ testProperty "left identity" $ property $
-      propIdentity (\p -> mempty <> p) id
+      propIdentity (mempty <>) id
   , testProperty "right identity" $ property $
-      propIdentity (\p -> p <> mempty) id
+      propIdentity (<> mempty) id
   , testProperty "associativity" $ property $
       propAssociativity (\x y z -> x <> (y <> z)) (\x y z -> (x <> y) <> z)
   ]
@@ -171,9 +170,7 @@ monoidTests = testGroup "Policy is a monoid"
           validRes = maybe True (>= 0)
       l <- liftIO $ applyPolicy' left
       r <- liftIO $ applyPolicy' right
-      if validRes r && validRes l
-        then l === r
-        else return ()
+      when (validRes r && validRes l) $ l === r
     propAssociativity left right  = do
       retryStatus <- forAll genRetryStatus
       let genDelay = Gen.maybe (Gen.int (Range.linear 0 maxBound))
@@ -182,7 +179,7 @@ monoidTests = testGroup "Policy is a monoid"
       delayC <- forAll genDelay
       let applyPolicy' f = liftIO $ getRetryPolicyM (f (retryPolicy (const delayA)) (retryPolicy (const delayB)) (retryPolicy (const delayC))) retryStatus
       res <- liftIO (liftA2 (==) (applyPolicy' left) (applyPolicy' right))
-      assert res
+      HH.assert res
 
 
 -------------------------------------------------------------------------------
@@ -231,7 +228,7 @@ maskingStateTests = testGroup "masking state"
         maskingState' @?= maskingState
         fail "Retrying..."
       assertBool
-        ("Expected EX.IOException but didn't get one")
+        "Expected EX.IOException but didn't get one"
         (isLeft (final :: Either EX.IOException ()))
 
   , testCase "should mask asynchronous exceptions in exception handlers" $ do
@@ -243,7 +240,7 @@ maskingStateTests = testGroup "masking state"
             ]
       final <- try $ recovering retryPolicyDefault checkMaskingStateHandlers $ const $ fail "Retrying..."
       assertBool
-        ("Expected EX.IOException but didn't get one")
+        "Expected EX.IOException but didn't get one"
         (isLeft (final :: Either EX.IOException ()))
   ]
 
@@ -276,7 +273,7 @@ capDelayTests = testGroup "capDelay"
 -- | Generates policies that increase on each iteration
 genScalingPolicy :: (Alternative m) => Int -> m (RetryPolicyM Identity)
 genScalingPolicy baseDelay =
-  (pure (exponentialBackoff baseDelay) <|> pure (fibonacciBackoff baseDelay))
+  pure (exponentialBackoff baseDelay) <|> pure (fibonacciBackoff baseDelay)
 
 
 -------------------------------------------------------------------------------
@@ -309,7 +306,7 @@ quadraticDelayTests = testGroup "quadratic delay"
       endTime <- liftIO getCurrentTime
       HH.assert (isLeftAnd isUserError res)
       let tmo = if retries > 0 then timeout * 2 ^ (retries - 1) else 0
-      let ms' = ((fromInteger . toInteger $ tmo) / 1000000.0)
+      let ms' = (fromInteger . toInteger $ tmo) / 1000000.0
       HH.assert (diffUTCTime endTime startTime >= ms')
   ]
 
@@ -322,17 +319,15 @@ overridingDelayTests = testGroup "overriding delay"
         testOverride
           retryingDynamic
           (\delays rs _ -> return $ ConsultPolicyOverrideDelay (delays !! rsIterNumber rs))
-          (\_ _ -> liftIO getCurrentTime >>= \time -> tell [time])
-    , testProperty "recoveringDynamic" $
-        testOverride
-          recoveringDynamic
-          (\delays -> [\rs -> Handler (\(_::SomeException) -> return $ ConsultPolicyOverrideDelay (delays !! rsIterNumber rs))])
-          (\delays rs -> do
-              liftIO getCurrentTime >>= \time -> tell [time]
-              if rsIterNumber rs < length delays
-                then throwM (userError "booo")
-                else return ()
-          )
+          (\_ ref _ -> liftIO getCurrentTime >>= \time -> modifyIORef' ref (++[time]))
+   , testProperty "recoveringDynamic" $
+       testOverride
+         recoveringDynamic
+         (\delays -> [\rs -> Handler (\(_::SomeException) -> return $ ConsultPolicyOverrideDelay (delays !! rsIterNumber rs))])
+         (\delays ref rs -> do
+             liftIO getCurrentTime >>= \time -> modifyIORef' ref (++[time])
+             when (rsIterNumber rs < length delays) $ throwM (userError "booo")
+         )
     ]
   ]
   where
@@ -344,13 +339,15 @@ overridingDelayTests = testGroup "overriding delay"
     toNominal = realToFrac
     -- Generic test case used to test both "retryingDynamic" and "recoveringDynamic"
     testOverride retryer handler action = property $ do
+      ref <- newIORef []
       retryPolicy' <- forAll $ genPolicyNoLimit (Range.linear 1 1000000)
       delays <- forAll $ Gen.list (Range.linear 1 10) (Gen.int (Range.linear 10 1000))
-      (_, measuredTimestamps) <- liftIO $ runWriterT $ retryer
+      _ <- liftIO  $ retryer
         -- Stop retrying when we run out of delays
         (retryPolicy' <> limitRetries (length delays))
         (handler delays)
-        (action delays)
+        (action delays ref)
+      measuredTimestamps <- readIORef ref
       let expectedDelays = map microsToNominalDiffTime delays
       forM_ (zip (diffTimes measuredTimestamps) expectedDelays) $
         \(actual, expected) -> diff actual (>=) expected
@@ -431,9 +428,7 @@ mkFailN e n = do
     r <- newIORef 0
     return $ const $ do
       old <- atomicModifyIORef' r $ \ old -> (old+1, old)
-      case old >= n of
-        True  -> return ()
-        False -> throwM e
+      unless (old >= n) $ throwM e
 
 
 -------------------------------------------------------------------------------

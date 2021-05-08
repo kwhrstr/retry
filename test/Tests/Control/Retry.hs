@@ -8,7 +8,6 @@ module Tests.Control.Retry
 -------------------------------------------------------------------------------
 import           Control.Applicative
 import qualified Control.Exception           as EX
-import           Control.Monad.Catch         (throwM)
 import           Control.Monad.Identity
 import           Control.Monad.IO.Class
 import           Control.Monad.Writer.Strict
@@ -56,7 +55,7 @@ recoveringTests = testGroup "recovering"
       res <- liftIO $ try $ recovering
         (constantDelay timeout' <> limitRetries retries)
         testHandlers
-        (const $ throwM (userError "booo"))
+        (const $ throwIO (userError "booo"))
       endTime <- liftIO getCurrentTime
       HH.assert (isLeftAnd isUserError res)
       let ms' = (fromInteger . toInteger $ (timeout' * retries)) / 1000000.0
@@ -302,7 +301,7 @@ quadraticDelayTests = testGroup "quadratic delay"
       res <- liftIO $ try $ recovering
         (exponentialBackoff timeout <> limitRetries retries)
         [const $ Handler (\(_::SomeException) -> return True)]
-        (const $ throwM (userError "booo"))
+        (const $ throwIO (userError "booo"))
       endTime <- liftIO getCurrentTime
       HH.assert (isLeftAnd isUserError res)
       let tmo = if retries > 0 then timeout * 2 ^ (retries - 1) else 0
@@ -326,7 +325,7 @@ overridingDelayTests = testGroup "overriding delay"
          (\delays -> [\rs -> Handler (\(_::SomeException) -> return $ ConsultPolicyOverrideDelay (delays !! rsIterNumber rs))])
          (\delays ref rs -> do
              liftIO getCurrentTime >>= \time -> modifyIORef' ref (++[time])
-             when (rsIterNumber rs < length delays) $ throwM (userError "booo")
+             when (rsIterNumber rs < length delays) $ throwIO (userError "booo")
          )
     ]
   ]
@@ -428,7 +427,7 @@ mkFailN e n = do
     r <- newIORef 0
     return $ const $ do
       old <- atomicModifyIORef' r $ \ old -> (old+1, old)
-      unless (old >= n) $ throwM e
+      unless (old >= n) $ throwIO e
 
 
 -------------------------------------------------------------------------------

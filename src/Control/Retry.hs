@@ -80,12 +80,11 @@ module Control.Retry
 
 -------------------------------------------------------------------------------
 import           Control.Applicative
-import           Control.Concurrent
 
-import           Control.Exception (AsyncException)
 import           Control.Monad
-import           Control.Monad.Catch (throwM, MonadThrow)
-import           UnliftIO (MonadUnliftIO, MonadIO, SomeException, SomeAsyncException, Handler(..), Exception, liftIO, mask, try, fromException)
+import           UnliftIO (MonadUnliftIO, MonadIO, liftIO)
+import           UnliftIO.Exception(Exception, AsyncExceptionWrapper, SomeException, SomeAsyncException, Handler(..), mask, try, fromException, throwIO)
+import           UnliftIO.Concurrent (threadDelay)
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.State
@@ -507,7 +506,7 @@ retryingDynamic policy chk f = go defaultRetryStatus
 -- Running action
 -- *** Exception: this is an error
 recoverAll
-         :: (MonadUnliftIO m, MonadThrow m)
+         :: (MonadUnliftIO m)
          => RetryPolicyM m
          -> (RetryStatus -> m a)
          -> m a
@@ -528,7 +527,7 @@ skipAsyncExceptions
     => [RetryStatus -> Handler m Bool]
 skipAsyncExceptions = handlers
   where
-    asyncH _ = Handler $ \ (_ :: AsyncException) -> return False
+    asyncH _ = Handler $ \ (_ :: AsyncExceptionWrapper) -> return False
 
     someAsyncH _ = Handler $ \(_ :: SomeAsyncException) -> return False
     handlers = [asyncH, someAsyncH]
@@ -547,7 +546,7 @@ skipAsyncExceptions = handlers
 -- just plan on catching 'SomeException', you may as well ues
 -- 'recoverAll'
 recovering
-    :: (MonadUnliftIO m, MonadThrow m)
+    :: (MonadUnliftIO m)
     => RetryPolicyM m
     -- ^ Just use 'retryPolicyDefault' for default settings
     -> [RetryStatus -> Handler m Bool]
@@ -566,7 +565,7 @@ recovering policy hs = recoveringDynamic policy hs'
 -- | The difference between this and 'recovering' is the same as
 --  the difference between 'retryingDynamic' and 'retrying'.
 recoveringDynamic
-    :: (MonadUnliftIO m, MonadThrow m)
+    :: (MonadUnliftIO m)
     => RetryPolicyM m
     -- ^ Just use 'retryPolicyDefault' for default settings
     -> [RetryStatus -> Handler m RetryAction]
@@ -588,17 +587,17 @@ recoveringDynamic policy hs f = mask $ \restore -> go restore defaultRetryStatus
               Right x -> return x
               Left e -> recover (e :: SomeException) hs
             where
-              recover e [] = throwM e
+              recover e [] = throwIO e
               recover e ((($ s) -> Handler h) : hs')
                 | Just e' <- fromException e = do
                     let consultPolicy policy' = do
                           rs <- applyAndDelay policy' s
                           case rs of
                             Just rs' -> loop $! rs'
-                            Nothing -> throwM e'
+                            Nothing -> throwIO e'
                     chk <- h e'
                     case chk of
-                      DontRetry -> throwM e'
+                      DontRetry -> throwIO e'
                       ConsultPolicy -> consultPolicy policy
                       ConsultPolicyOverrideDelay delay ->
                         consultPolicy $ modifyRetryPolicyDelay (const delay) policy
@@ -612,7 +611,7 @@ recoveringDynamic policy hs f = mask $ \restore -> go restore defaultRetryStatus
 -- and failure. Useful for implementing retry logic in distributed
 -- queues and similar external-interfacing systems.
 stepping
-    :: (MonadUnliftIO m, MonadThrow m)
+    :: (MonadUnliftIO m)
     => RetryPolicyM m
     -- ^ Just use 'retryPolicyDefault' for default settings
     -> [RetryStatus -> Handler m Bool]
@@ -633,17 +632,16 @@ stepping policy hs schedule f s = do
       Right x -> return $ Just x
       Left e -> recover (e :: SomeException) hs
     where
-      recover e [] = throwM e
+      recover e [] = throwIO e
       recover e ((($ s) -> Handler h) : hs')
         | Just e' <- fromException e = do
-            chk <- h e'
-            if chk then (do
-              res <- applyPolicy policy s
-              case res of
-                Just rs -> do
-                  schedule $! rs
-                  return Nothing
-                Nothing -> throwM e') else throwM e'
+            h e' >>= \chk -> unless chk . throwIO $ e'            
+            res <- applyPolicy policy s
+            case res of
+              Just rs -> do
+                schedule $! rs
+                return Nothing
+              Nothing -> throwIO e'
         | otherwise = recover e hs'
 
 
@@ -784,6 +782,6 @@ lens sa sbt afb s = sbt s <$> afb (sa s)
 
 -- test = retrying retryPolicyDefault [h1,h2] f
 --     where
---       f = putStrLn "Running action" >> throwM AnotherException
+--       f = putStrLn "Running action" >> throwIO AnotherException
 --       h1 = Handler $ \ (e :: TestException) -> return False
 --       h2 = Handler $ \ (e :: AnotherException) -> return True

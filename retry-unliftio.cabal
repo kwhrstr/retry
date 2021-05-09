@@ -1,20 +1,10 @@
-name:                retry
+name:                retry-unliftio
 
 description:
+        
+        This package is retry switched unliftio
 
-        This package exposes combinators that can wrap arbitrary
-        monadic actions. They run the action and potentially retry
-        running it with some configurable delay for a configurable
-        number of times.
-
-        The purpose is to make it easier to work with IO and
-        especially network IO actions that often experience temporary
-        failure and warrant retrying of the original action. For
-        example, a database query may time out for a while, in which
-        case we should hang back for a bit and retry the query instead
-        of simply raising an exception.
-
-version:             0.8.1.2
+version:             0.1.0.0
 synopsis:            Retry combinators for monadic actions that may fail
 license:             BSD3
 license-file:        LICENSE
@@ -24,7 +14,7 @@ copyright:           Ozgun Ataman, Soostone Inc
 category:            Control
 build-type:          Simple
 cabal-version:       >=1.10
-homepage:            http://github.com/Soostone/retry
+homepage:            https://github.com/kwhrstr/retry-unliftio
 extra-source-files:
   README.md
   changelog.md
@@ -34,14 +24,13 @@ flag lib-Werror
   manual: True
 
 library
-  exposed-modules:     Control.Retry
+  exposed-modules:     UnliftIO.Retry
   build-depends:
       base                 >= 4.8 && < 5
-    , exceptions           >= 0.5
     , ghc-prim
     , random               >= 1
     , transformers
-    , unliftio             >=0.2.14
+    , unliftio             == 0.2.*
   hs-source-dirs:      src
   default-language:    Haskell2010
 
@@ -56,8 +45,8 @@ test-suite test
     main-is:        Main.hs
     hs-source-dirs: test,src
     ghc-options:    -threaded
-    other-modules:  Control.Retry
-                    Tests.Control.Retry
+    other-modules:  UnliftIO.Retry
+                    Tests.UnliftIO.Retry
     build-depends:
         base              ==4.*
       , exceptions
@@ -72,7 +61,7 @@ test-suite test
       , stm
       , ghc-prim
       , mtl
-      , unliftio             >=0.2.14
+      , unliftio             ==0.2.*
     default-language: Haskell2010
 
     if flag(lib-Werror)

@@ -29,7 +29,7 @@
 ----------------------------------------------------------------------------
 
 
-module Control.Retry
+module UnliftIO.Retry
     (
       -- * Types and Operations
       RetryPolicyM (..)

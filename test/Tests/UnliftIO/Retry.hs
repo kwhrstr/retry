@@ -1,7 +1,7 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# LANGUAGE DeriveDataTypeable  #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Tests.Control.Retry
+module Tests.UnliftIO.Retry
     ( tests
     ) where
 
@@ -27,7 +27,7 @@ import           Test.Tasty
 import           Test.Tasty.Hedgehog
 import           Test.Tasty.HUnit            (assertBool, testCase, (@?=))
 -------------------------------------------------------------------------------
-import           Control.Retry
+import           UnliftIO.Retry
 -------------------------------------------------------------------------------
 
 

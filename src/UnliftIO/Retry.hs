@@ -145,7 +145,7 @@ newtype RetryPolicyM m = RetryPolicyM { getRetryPolicyM :: RetryStatus -> m (May
 type RetryPolicy = forall m . Monad m => RetryPolicyM m
 
 -- | Default retry policy
-retryPolicyDefault :: RetryPolicy
+retryPolicyDefault :: (Monad m) => RetryPolicyM m
 retryPolicyDefault = constantDelay 50000 <> limitRetries 5
 
 
@@ -287,7 +287,7 @@ applyAndDelay policy s = do
 -------------------------------------------------------------------------------
 -- | Helper for making simplified policies that don't use the monadic
 -- context.
-retryPolicy :: (RetryStatus -> Maybe Int) -> RetryPolicy
+retryPolicy :: (Monad m) => (RetryStatus -> Maybe Int) -> RetryPolicyM m
 retryPolicy f = RetryPolicyM $ \ s -> return (f s)
 
 
@@ -338,9 +338,10 @@ limitRetriesByCumulativeDelay cumulativeLimit p = RetryPolicyM $ \ stat ->
 -------------------------------------------------------------------------------
 -- | Implement a constant delay with unlimited retries.
 constantDelay
-    :: Int
+    :: (Monad m)
+    => Int
     -- ^ Base delay in microseconds
-    -> RetryPolicy
+    -> RetryPolicyM m
 constantDelay delay = retryPolicy (const (Just delay))
 
 
@@ -348,9 +349,10 @@ constantDelay delay = retryPolicy (const (Just delay))
 -- | Grow delay exponentially each iteration.  Each delay will
 -- increase by a factor of two.
 exponentialBackoff
-    :: Int
+    :: (Monad m)
+    => Int
     -- ^ Base delay in microseconds
-    -> RetryPolicy
+    -> RetryPolicyM m
 exponentialBackoff base = retryPolicy $ \ RetryStatus { rsIterNumber = n } ->
   Just $! base `boundedMult` boundedPow 2 n
 
@@ -364,7 +366,7 @@ exponentialBackoff base = retryPolicy $ \ RetryStatus { rsIterNumber = n } ->
 --
 -- sleep = temp \/ 2 + random_between(0, temp \/ 2)
 fullJitterBackoff
-    :: MonadIO m
+    :: (MonadIO m)
     => Int
     -- ^ Base delay in microseconds
     -> RetryPolicyM m
@@ -377,9 +379,10 @@ fullJitterBackoff base = RetryPolicyM $ \ RetryStatus { rsIterNumber = n } -> do
 -------------------------------------------------------------------------------
 -- | Implement Fibonacci backoff.
 fibonacciBackoff
-    :: Int
+    :: (Monad m)
+    => Int
     -- ^ Base delay in microseconds
-    -> RetryPolicy
+    -> RetryPolicyM m
 fibonacciBackoff base = retryPolicy $ \RetryStatus { rsIterNumber = n } ->
   Just $ fib (n + 1) (0, base)
     where
